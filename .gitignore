@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+.env
+.env.*
+venv/
+env/
+.venv/
+
+# Node
+node_modules/
+dist/
+.npm
+
+# Build artifacts
+app/backend/static/
+app/frontend/dist/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Azure
+*.publishsettings
+.azure/
