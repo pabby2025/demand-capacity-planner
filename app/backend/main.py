@@ -8,7 +8,7 @@ import logging
 
 from database import engine, SessionLocal
 from models import Base
-from routers import upload, resources, projects, analytics
+from routers import upload, resources, projects, analytics, ai_chat
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,6 +76,7 @@ app.include_router(upload.router, prefix="/api", tags=["upload"])
 app.include_router(resources.router, prefix="/api", tags=["resources"])
 app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(analytics.router, prefix="/api", tags=["analytics"])
+app.include_router(ai_chat.router, prefix="/api", tags=["ai"])
 
 
 @app.get("/api/health")
