@@ -8,7 +8,7 @@ set -e
 # ── Config ────────────────────────────────────────────────────
 SUBSCRIPTION_ID="7b62dc90-3344-4868-9cd9-8f2a298eb856"
 RESOURCE_GROUP="rg-demand-capacity-planner"
-LOCATION="eastus"                        # Change if preferred
+LOCATION="eastus2"                       # eastus is restricted in this subscription
 
 ACR_NAME="acrdemandcapacity"             # Must be globally unique, alphanumeric
 APP_NAME="demand-capacity-planner"       # Must be globally unique → becomes URL
@@ -26,20 +26,20 @@ echo ">>> Setting subscription..."
 az account set --subscription "$SUBSCRIPTION_ID"
 
 # ── Resource Group ────────────────────────────────────────────
-echo ">>> Creating resource group: $RESOURCE_GROUP"
+echo ">>> Creating resource group: $RESOURCE_GROUP (skip if exists)"
 az group create \
   --name "$RESOURCE_GROUP" \
   --location "$LOCATION" \
-  --output none
+  --output none 2>/dev/null || echo "    Resource group already exists, continuing..."
 
 # ── Azure Container Registry ──────────────────────────────────
-echo ">>> Creating Container Registry: $ACR_NAME"
+echo ">>> Creating Container Registry: $ACR_NAME (skip if exists)"
 az acr create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$ACR_NAME" \
   --sku Basic \
   --admin-enabled true \
-  --output none
+  --output none 2>/dev/null || echo "    ACR already exists, continuing..."
 
 ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
 ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
