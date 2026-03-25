@@ -1,6 +1,6 @@
-import anthropic
 import json
 import os
+from openai import AzureOpenAI, AuthenticationError, RateLimitError
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -13,7 +13,10 @@ from database import get_db
 
 router = APIRouter()
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+AZURE_OPENAI_ENDPOINT   = "https://cvs-solutions.openai.azure.com/"
+AZURE_OPENAI_KEY        = os.environ.get("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 SYSTEM_PROMPT = """You are an expert AI assistant for a Resource Capacity Planning system used by an IT services organization. You have real-time access to data for 250+ resources across vendors (Cognizant, CVS, TCS), multiple projects, and weekly utilization metrics.
 
@@ -35,144 +38,125 @@ Guidelines:
 
 TOOLS = [
     {
-        "name": "get_dashboard_overview",
-        "description": (
-            "Returns a high-level overview of the entire resource capacity planning system. "
-            "Includes total active resource count, average utilization percentage, over-allocation count and percentage, "
-            "total demand hours, actual hours, and max capacity hours, demand gap, and vendor breakdown by resource count. "
-            "Use this tool when the user asks for a summary, overview, or general status of the organization."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        "type": "function",
+        "function": {
+            "name": "get_dashboard_overview",
+            "description": (
+                "Returns a high-level overview of the entire resource capacity planning system. "
+                "Includes total active resource count, average utilization percentage, over-allocation count and percentage, "
+                "total demand hours, actual hours, and max capacity hours, demand gap, and vendor breakdown by resource count. "
+                "Use this tool when the user asks for a summary, overview, or general status of the organization."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
-        "name": "get_overallocated_resources",
-        "description": (
-            "Returns a list of resources that are currently over-allocated (demand exceeds capacity). "
-            "Each record includes resource name, skill, vendor, location, project area, demand hours, "
-            "actual hours, max hours, over-allocated hours, and utilization percentage. "
-            "Use this when the user asks who is over-allocated, stretched, or at risk of burnout. "
-            "Can be filtered by vendor."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of over-allocated resources to return. Default is 20.",
-                    "default": 20,
+        "type": "function",
+        "function": {
+            "name": "get_overallocated_resources",
+            "description": (
+                "Returns a list of resources that are currently over-allocated (demand exceeds capacity). "
+                "Each record includes resource name, skill, vendor, location, project area, demand hours, "
+                "actual hours, max hours, over-allocated hours, and utilization percentage. "
+                "Use this when the user asks who is over-allocated, stretched, or at risk of burnout. "
+                "Can be filtered by vendor."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of over-allocated resources to return. Default is 20.",
+                    },
+                    "vendor": {
+                        "type": "string",
+                        "description": "Optional vendor name to filter results (e.g., 'Cognizant', 'TCS', 'CVS').",
+                    },
                 },
-                "vendor": {
-                    "type": "string",
-                    "description": "Optional vendor name to filter results (e.g., 'Cognizant', 'TCS', 'CVS').",
-                },
+                "required": [],
             },
-            "required": [],
         },
     },
     {
-        "name": "get_utilization_by_skill",
-        "description": (
-            "Groups all utilization metrics by primary skill and returns per-skill analytics. "
-            "Each record includes skill name, resource count, average utilization percentage, "
-            "total demand hours, total actual hours, total capacity (max hours), over-allocated count, "
-            "and demand gap (demand - actual). "
-            "Use this to identify under-utilized skills, over-demanded skills, or skill shortages."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        "type": "function",
+        "function": {
+            "name": "get_utilization_by_skill",
+            "description": (
+                "Groups all utilization metrics by primary skill and returns per-skill analytics. "
+                "Each record includes skill name, resource count, average utilization percentage, "
+                "total demand hours, total actual hours, total capacity (max hours), over-allocated count, "
+                "and demand gap (demand - actual). "
+                "Use this to identify under-utilized skills, over-demanded skills, or skill shortages."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
-        "name": "get_project_demand_analysis",
-        "description": (
-            "Groups metrics by project area and returns demand vs capacity analysis per project/area. "
-            "Each record includes area/project name, resource count, total demand hours, total actual hours, "
-            "total max capacity, demand gap, fulfillment percentage (actual/demand*100), "
-            "over-allocated count, and a is_critical flag (true when fulfillment < 80%). "
-            "Use this to identify projects at delivery risk, projects with capacity shortfalls, "
-            "or high-demand project areas."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        "type": "function",
+        "function": {
+            "name": "get_project_demand_analysis",
+            "description": (
+                "Groups metrics by project area and returns demand vs capacity analysis per project/area. "
+                "Each record includes area/project name, resource count, total demand hours, total actual hours, "
+                "total max capacity, demand gap, fulfillment percentage (actual/demand*100), "
+                "over-allocated count, and a is_critical flag (true when fulfillment < 80%). "
+                "Use this to identify projects at delivery risk, projects with capacity shortfalls, "
+                "or high-demand project areas."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
-        "name": "get_vendor_performance",
-        "description": (
-            "Groups metrics by resource vendor and returns comparative vendor performance data. "
-            "Each record includes vendor name, total resource count, onshore count, offshore count, "
-            "average utilization percentage, total demand hours, total actual hours, total capacity, "
-            "demand gap, and over-allocated count. "
-            "Use this to compare vendor performance, onshore vs offshore ratios, or vendor utilization efficiency."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        "type": "function",
+        "function": {
+            "name": "get_vendor_performance",
+            "description": (
+                "Groups metrics by resource vendor and returns comparative vendor performance data. "
+                "Each record includes vendor name, total resource count, onshore count, offshore count, "
+                "average utilization percentage, total demand hours, total actual hours, total capacity, "
+                "demand gap, and over-allocated count. "
+                "Use this to compare vendor performance, onshore vs offshore ratios, or vendor utilization efficiency."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
-        "name": "get_resources_by_criteria",
-        "description": (
-            "Searches and filters the resource database by one or more criteria, then joins the latest "
-            "utilization metrics for each matching resource. "
-            "Returns resource details (name, role, skill, vendor, location, manager, status) along with "
-            "utilization metrics (demand hours, actual hours, max hours, utilization pct, over-allocation flag). "
-            "Use this when the user asks about specific resources, wants to find resources by skill or vendor, "
-            "or needs to look up a particular person or group."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "skill": {
-                    "type": "string",
-                    "description": "Filter by primary skill (e.g., 'Java', 'Python', 'AWS').",
+        "type": "function",
+        "function": {
+            "name": "get_resources_by_criteria",
+            "description": (
+                "Searches and filters the resource database by one or more criteria, then joins the latest "
+                "utilization metrics for each matching resource. "
+                "Returns resource details (name, role, skill, vendor, location, manager, status) along with "
+                "utilization metrics (demand hours, actual hours, max hours, utilization pct, over-allocation flag). "
+                "Use this when the user asks about specific resources, wants to find resources by skill or vendor, "
+                "or needs to look up a particular person or group."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill":     {"type": "string", "description": "Filter by primary skill (e.g., 'Java', 'Python', 'AWS')."},
+                    "vendor":    {"type": "string", "description": "Filter by vendor name (e.g., 'Cognizant', 'TCS')."},
+                    "location":  {"type": "string", "description": "Filter by location type: 'Onshore' or 'Offshore'."},
+                    "area":      {"type": "string", "description": "Filter by project area or domain."},
+                    "status":    {"type": "string", "description": "Filter by resource status: 'ACTIVE' or 'INACTIVE'."},
+                    "limit":     {"type": "integer", "description": "Maximum number of resources to return. Default is 25."},
                 },
-                "vendor": {
-                    "type": "string",
-                    "description": "Filter by vendor name (e.g., 'Cognizant', 'TCS').",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "Filter by location type (e.g., 'Onshore', 'Offshore').",
-                },
-                "area": {
-                    "type": "string",
-                    "description": "Filter by project area or domain.",
-                },
-                "status": {
-                    "type": "string",
-                    "description": "Filter by resource status: 'ACTIVE' or 'INACTIVE'.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of resources to return. Default is 25.",
-                    "default": 25,
-                },
+                "required": [],
             },
-            "required": [],
         },
     },
     {
-        "name": "get_weekly_trend",
-        "description": (
-            "Returns week-over-week trend data for demand, actual hours, capacity, and over-allocation. "
-            "Each record includes the week date, total demand hours, total actual hours, total capacity, "
-            "total over-allocated hours, and resource count — sorted chronologically. "
-            "Use this to identify trends, spikes, seasonal patterns, or whether the situation is improving or worsening."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
+        "type": "function",
+        "function": {
+            "name": "get_weekly_trend",
+            "description": (
+                "Returns week-over-week trend data for demand, actual hours, capacity, and over-allocation. "
+                "Each record includes the week date, total demand hours, total actual hours, total capacity, "
+                "total over-allocated hours, and resource count — sorted chronologically. "
+                "Use this to identify trends, spikes, seasonal patterns, or whether the situation is improving or worsening."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
 ]
@@ -574,24 +558,28 @@ def execute_tool(tool_name: str, tool_input: dict, db: Session) -> dict:
 
 def run_agentic_loop(messages: list, db: Session):
     """
-    Synchronous generator that runs the agentic loop with Claude.
+    Synchronous generator that runs the agentic tool-use loop with Azure OpenAI.
     Yields SSE-formatted lines for streaming to the client.
     """
-    if not ANTHROPIC_API_KEY:
-        yield 'data: {"type": "error", "message": "ANTHROPIC_API_KEY environment variable is not set. Please configure it to use the AI assistant."}\n\n'
+    if not AZURE_OPENAI_KEY:
+        yield 'data: {"type": "error", "message": "AZURE_OPENAI_KEY environment variable is not set. Please configure it in Azure App Service settings."}\n\n'
         yield 'data: {"type": "done"}\n\n'
         return
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = AzureOpenAI(
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_key=AZURE_OPENAI_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
 
-        # Convert messages to Anthropic format
-        anthropic_messages = []
+        # Build message history — system prompt first, then conversation
+        history = [{"role": "system", "content": SYSTEM_PROMPT}]
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role in ("user", "assistant"):
-                anthropic_messages.append({"role": role, "content": content})
+                history.append({"role": role, "content": content})
 
         max_iterations = 10
         iteration = 0
@@ -599,38 +587,29 @@ def run_agentic_loop(messages: list, db: Session):
         while iteration < max_iterations:
             iteration += 1
 
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT,
+                messages=history,
                 tools=TOOLS,
-                messages=anthropic_messages,
+                tool_choice="auto",
+                max_tokens=4096,
             )
 
-            # Check for tool use
-            if response.stop_reason == "tool_use":
-                # Collect tool use blocks
-                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-                text_blocks = [b for b in response.content if b.type == "text"]
+            choice = response.choices[0]
 
-                # Stream any intermediate text
-                for text_block in text_blocks:
-                    if text_block.text.strip():
-                        yield f'data: {json.dumps({"type": "text", "content": text_block.text})}\n\n'
+            if choice.finish_reason == "tool_calls":
+                # Append assistant message with tool_calls to history
+                history.append(choice.message)
 
-                # Append assistant message with full content
-                anthropic_messages.append({
-                    "role": "assistant",
-                    "content": response.content,
-                })
+                # Execute each tool call
+                for tc in choice.message.tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        tool_input = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        tool_input = {}
 
-                # Execute all tool calls and collect results
-                tool_results = []
-                for tool_block in tool_use_blocks:
-                    tool_name = tool_block.name
-                    tool_input = tool_block.input if tool_block.input else {}
-
-                    # Notify client about tool call
+                    # Notify client which tool is being called
                     yield f'data: {json.dumps({"type": "tool_call", "tool": tool_name})}\n\n'
 
                     try:
@@ -638,46 +617,37 @@ def run_agentic_loop(messages: list, db: Session):
                     except Exception as e:
                         result = {"error": f"Tool execution failed: {str(e)}"}
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
+                    # Append tool result to history
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
                         "content": json.dumps(result),
                     })
 
-                # Append tool results as user message
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": tool_results,
-                })
+                # Continue loop to get the next response
+                continue
 
-            elif response.stop_reason == "end_turn":
-                # Final response — extract text
-                full_text = ""
-                for block in response.content:
-                    if block.type == "text":
-                        full_text += block.text
-
-                if full_text:
-                    yield f'data: {json.dumps({"type": "text", "content": full_text})}\n\n'
-
+            elif choice.finish_reason in ("stop", "length"):
+                # Final text response
+                final_text = choice.message.content or ""
+                if final_text:
+                    yield f'data: {json.dumps({"type": "text", "content": final_text})}\n\n'
                 yield 'data: {"type": "done"}\n\n'
                 return
 
             else:
-                # Unexpected stop reason
-                yield f'data: {json.dumps({"type": "error", "message": f"Unexpected stop reason: {response.stop_reason}"})}\n\n'
+                yield f'data: {json.dumps({"type": "error", "message": f"Unexpected finish reason: {choice.finish_reason}"})}\n\n'
                 yield 'data: {"type": "done"}\n\n'
                 return
 
-        # Max iterations reached
         yield 'data: {"type": "error", "message": "Maximum reasoning iterations reached. Please try a more specific question."}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
-    except anthropic.AuthenticationError:
-        yield 'data: {"type": "error", "message": "Invalid Anthropic API key. Please check your ANTHROPIC_API_KEY environment variable."}\n\n'
+    except AuthenticationError:
+        yield 'data: {"type": "error", "message": "Invalid Azure OpenAI key. Please check the AZURE_OPENAI_KEY setting."}\n\n'
         yield 'data: {"type": "done"}\n\n'
-    except anthropic.RateLimitError:
-        yield 'data: {"type": "error", "message": "Anthropic API rate limit reached. Please wait a moment and try again."}\n\n'
+    except RateLimitError:
+        yield 'data: {"type": "error", "message": "Azure OpenAI rate limit reached. Please wait a moment and try again."}\n\n'
         yield 'data: {"type": "done"}\n\n'
     except Exception as e:
         yield f'data: {json.dumps({"type": "error", "message": f"An error occurred: {str(e)}"})}\n\n'
