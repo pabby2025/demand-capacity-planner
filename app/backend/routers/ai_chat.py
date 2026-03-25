@@ -13,9 +13,9 @@ from database import get_db
 
 router = APIRouter()
 
-AZURE_OPENAI_ENDPOINT   = "https://cvs-solutions.openai.azure.com/"
-AZURE_OPENAI_KEY        = os.environ.get("AZURE_OPENAI_KEY", "")
-AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+AZURE_OPENAI_ENDPOINT    = os.environ.get("AZURE_OPENAI_ENDPOINT", "https://historyrepo.openai.azure.com/")
+AZURE_OPENAI_KEY         = os.environ.get("AZURE_OPENAI_KEY", "")
+AZURE_OPENAI_DEPLOYMENT  = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "user-history")
 AZURE_OPENAI_API_VERSION = "2024-10-21"
 
 SYSTEM_PROMPT = """You are an expert AI assistant for a Resource Capacity Planning system used by an IT services organization. You have real-time access to data for 250+ resources across vendors (Cognizant, CVS, TCS), multiple projects, and weekly utilization metrics.
